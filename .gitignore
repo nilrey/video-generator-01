@@ -1,0 +1,18 @@
+# .gitignore
+@"
+venv/
+data/
+__pycache__/
+*.pyc
+output/
+stills/
+reference/
+*.wav
+*.mp4
+"@ | Set-Content -Path "$root\.gitignore" -Encoding UTF8
+
+# requirements.txt
+@"
+numpy>=1.24
+Pillow>=9.5
+"@ | Set-Content -Path "$root\requirements.txt" -Encoding UTF8
