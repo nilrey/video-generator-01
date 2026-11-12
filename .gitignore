@@ -1,18 +1,26 @@
-# .gitignore
-@"
+# Виртуальное окружение
+.venv/
 venv/
-data/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# Артефакты рендера
 output/
 stills/
-reference/
-*.wav
-*.mp4
-"@ | Set-Content -Path "$root\.gitignore" -Encoding UTF8
 
-# requirements.txt
-@"
-numpy>=1.24
-Pillow>=9.5
-"@ | Set-Content -Path "$root\requirements.txt" -Encoding UTF8
+# Эталоны и файлы от Claude
+reference/
+data/
+
+# Временные файлы
+*.tmp
+*.log
+
+# ОС / редакторы
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
