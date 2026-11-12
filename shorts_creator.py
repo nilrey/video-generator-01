@@ -14,23 +14,69 @@ from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 import json, tempfile, shutil
 
-CAPTION_HIGHLIGHT_WORD = False   # True — подсветка произносимого слова, False — подсветка всей фразы
+# ---------------------------------------------------------------------------
+# ДЕФОЛТЫ СТИЛЯ (могут быть переопределены из presets/*.json через setattr
+# со стороны video_generator.py — см. apply_style())
+# ---------------------------------------------------------------------------
 
-VOICE_DIR = r"D:\Projects\video-generator-01\assets\voice_trimmed"
-VOICE_EXT = ".wav"
-SR        = 44100        # целевая частота для микса
-DUCK_DB   = -7.0         # насколько тише музыка под голосом
+# caption
+CAPTION_HIGHLIGHT_WORD = False
+CAPF_SIZE       = 74
+CAP_MAXW        = 860
+CAP_BASE        = 1388
+GAP             = 16
+CAP_COLOR_TEXT  = (255, 255, 255)
+CAP_COLOR_BG    = (10, 12, 26)
+CAP_STROKE_W    = 8
+CAP_STROKE_FILL = (8, 9, 20)
+
+# title
+TITLE_H          = 330
+TITLE_DOT_STEP   = 58
+TITLE_DOT_Y      = (25, 55)
+TITLE_COUNTER_Y  = 125
+TITLE_TITLE_Y    = 250
+TITLE_TAG_Y      = 312
+TITLE_FS_COUNTER = 38
+TITLE_FS_TITLE   = 112
+TITLE_FS_TAG     = 42
+TITLE_MAXW       = 940
+TITLE_COLOR_TAG  = (170, 178, 210)
+TITLE_DOT_DIM    = (58, 64, 100)
+
+# audio
+VOICE_DIR   = r"D:\Projects\video-generator-01\assets\voice_trimmed"
+VOICE_EXT   = ".wav"
+SR          = 44100
 TARGET_LUFS = -14.0
 TARGET_TP   = -1.4
+FLOOR_DB    = -16.0
+MUSIC_GAIN  = 0.20
 
+# timing
+LEAD, TAIL  = 0.35, 0.5
+SPEECH_RATE = 1.0
+
+# формат и пути
 W, H, FPS = 1080, 1920, 30
-S = 2                                   # supersampling для иллюстраций
+S = 2
 PROJECT = Path(r"D:\Projects\video-generator-01")
 OUT_DIR = str(PROJECT / "output")
 FONTS   = PROJECT / "assets" / "fonts" / "otf"
 F_XB = str(FONTS / "Inter-ExtraBold.otf")
 F_B  = str(FONTS / "Inter-Bold.otf")
 F_SB = str(FONTS / "Inter-SemiBold.otf")
+
+# канвас иллюстраций
+CW, CH, CY = 900, 740, 370
+ILL_POS = (90, 462)
+
+# палитра
+DARK      = (18, 24, 48)
+GRAY      = (140, 148, 182)
+BG_TOP    = (13, 15, 34)
+BG_BOT    = (5, 6, 14)
+DECOR_DOT = (40, 44, 76)
 
 # ----------------------------------------------------------------- сценарий
 SCENES = [
@@ -54,7 +100,6 @@ SCENES = [
     dict(key="outro", title="ПОДПИШИСЬ", tag="разберём каждый тип подробнее", color=(255, 216, 77),
          text="Подписывайся, дальше разберём каждый тип подробнее!"),
 ]
-LEAD, TAIL = 0.35, 0.5          # пауза перед первой фразой / после последней, сек
 
 
 # ----------------------------------------------------------------- утилиты
@@ -65,6 +110,14 @@ def font(path, size):
         _fc[k] = ImageFont.truetype(path, int(size))
     return _fc[k]
 
+_CAPF_CACHE = {"size": None, "font": None}
+def CAPF_get():
+    """Ленивый кэш шрифта субтитров: пересобирается при смене CAPF_SIZE."""
+    if _CAPF_CACHE["size"] != CAPF_SIZE:
+        _CAPF_CACHE["size"] = CAPF_SIZE
+        _CAPF_CACHE["font"] = font(F_XB, CAPF_SIZE)
+    return _CAPF_CACHE["font"]
+
 def clamp(x, a=0.0, b=1.0): return max(a, min(b, x))
 def ease_out(x): return 1 - (1 - clamp(x)) ** 3
 def smooth(x): x = clamp(x); return x * x * (3 - 2 * x)
@@ -72,7 +125,12 @@ def mix(a, b, k): return tuple(int(a[i] + (b[i] - a[i]) * k) for i in range(3))
 
 
 def build_timeline():
-    """Тайминги сцен по длительности озвучки. Слова растягиваются пропорционально."""
+    """Тайминги сцен по длительности озвучки. Слова растягиваются пропорционально.
+
+    SPEECH_RATE < 1 — слова «длиннее» (субтитры режутся чаще),
+    SPEECH_RATE > 1 — слова «короче» (субтитры режутся реже).
+    Длительность сцены НЕ меняется — она задаётся mp3.
+    """
     t = 0.0
     for sc in SCENES:
         sc["start"] = t
@@ -82,13 +140,13 @@ def build_timeline():
         words, cur = [], 0.0
         for tok in sc["text"].split():
             letters = len([ch for ch in tok if ch.isalnum()])
-            d = 0.09 + 0.034 * letters
+            d = (0.09 + 0.034 * letters) / SPEECH_RATE
             words.append(dict(text=tok, start=cur, end=cur + d))
             cur += d
             if tok[-1] in ",:;":
-                cur += 0.17
+                cur += 0.17 / SPEECH_RATE
             elif tok[-1] in ".!?":
-                cur += 0.33
+                cur += 0.33 / SPEECH_RATE
         text_dur = cur
 
         k = (vdur / text_dur) if vdur else 1.0
@@ -114,12 +172,8 @@ def voice_path(key):
     return os.path.join(VOICE_DIR, key + VOICE_EXT)
 
 # ----------------------------------------------------------------- субтитры
-CAPF = font(F_XB, 74)
-CAP_MAXW = 860
-CAP_BASE = 1388
-GAP = 16                       # доп. расстояние между словами
-
 def layout_caption(sc):
+    CAPF = CAPF_get()
     words = sc["words"]
 
     def nlines(idxs):
@@ -166,6 +220,7 @@ def layout_caption(sc):
 
 
 def draw_caption(fr, sc, t):
+    CAPF = CAPF_get()
     ch = sc["chunks"][-1]
     for c in sc["chunks"]:
         if c["t0"] <= t < c["t1"]:
@@ -177,7 +232,6 @@ def draw_caption(fr, sc, t):
     items = ch["items"]
 
     if CAPTION_HIGHLIGHT_WORD:
-        # --- режим «по словам» ---
         cur = ch["idxs"][0]
         for j in ch["idxs"]:
             if sc["words"][j]["start"] <= t:
@@ -188,24 +242,23 @@ def draw_caption(fr, sc, t):
                                     radius=18, fill=col)
         for j, txt, x, b in items:
             if j == cur:
-                d.text((x, b), txt, font=CAPF, fill=(10, 12, 26), anchor="ls")
+                d.text((x, b), txt, font=CAPF, fill=CAP_COLOR_BG, anchor="ls")
             else:
-                d.text((x, b), txt, font=CAPF, fill=(255, 255, 255), anchor="ls",
-                       stroke_width=8, stroke_fill=(8, 9, 20))
+                d.text((x, b), txt, font=CAPF, fill=CAP_COLOR_TEXT, anchor="ls",
+                       stroke_width=CAP_STROKE_W, stroke_fill=CAP_STROKE_FILL)
     else:
-        # --- режим «по фразе» ---
         xs0 = min(x for _, _, x, _ in items)
         xs1 = max(x + CAPF.getlength(txt) for _, txt, x, _ in items)
         ys0 = min(b for _, _, _, b in items) - 66
         ys1 = max(b for _, _, _, b in items) + 22
         d.rounded_rectangle([xs0 - 18, ys0, xs1 + 18, ys1], radius=20, fill=col)
         for _, txt, x, b in items:
-            d.text((x, b), txt, font=CAPF, fill=(10, 12, 26), anchor="ls")
+            d.text((x, b), txt, font=CAPF, fill=CAP_COLOR_BG, anchor="ls")
 
 # ----------------------------------------------------------------- фон и заголовок
 def make_bg(color):
     yy = np.linspace(0, 1, H, dtype=np.float32)[:, None, None]
-    top, bot = np.array([13, 15, 34], np.float32), np.array([5, 6, 14], np.float32)
+    top, bot = np.array(BG_TOP, np.float32), np.array(BG_BOT, np.float32)
     base = np.broadcast_to(top * (1 - yy) + bot * yy, (H, W, 3)).copy()
     Y, X = np.mgrid[0:H, 0:W].astype(np.float32)
     g = np.clip(1 - np.sqrt(((X - 540) / 620) ** 2 + ((Y - 830) / 560) ** 2), 0, 1) ** 2
@@ -216,38 +269,40 @@ def make_bg(color):
     dr = ImageDraw.Draw(img)
     for y in range(40, H, 64):
         for x in range(40, W, 64):
-            dr.ellipse((x - 1.5, y - 1.5, x + 1.5, y + 1.5), fill=(40, 44, 76))
+            dr.ellipse((x - 1.5, y - 1.5, x + 1.5, y + 1.5), fill=DECOR_DOT)
     return img
 
 
 def build_title(si):
     sc = SCENES[si]
     col = sc["color"]
-    L = Image.new("RGBA", (W, 330), (0, 0, 0, 0))
+    L = Image.new("RGBA", (W, TITLE_H), (0, 0, 0, 0))
     d = ImageDraw.Draw(L)
     cur = si - 1 if 1 <= si <= 5 else (-1 if si == 0 else 5)
     for i in range(5):
-        x = W / 2 + (i - 2) * 58
+        x = W / 2 + (i - 2) * TITLE_DOT_STEP
         if i == cur:
-            d.ellipse([x - 15, 25, x + 15, 55], fill=col)
+            d.ellipse([x - 15, TITLE_DOT_Y[0], x + 15, TITLE_DOT_Y[1]], fill=col)
         elif i < cur:
-            d.ellipse([x - 10, 30, x + 10, 50], fill=(*col, 130))
+            d.ellipse([x - 10, TITLE_DOT_Y[0] + 5, x + 10, TITLE_DOT_Y[1] - 5],
+                      fill=(*col, 130))
         else:
-            d.ellipse([x - 10, 30, x + 10, 50], fill=(58, 64, 100, 255))
+            d.ellipse([x - 10, TITLE_DOT_Y[0] + 5, x + 10, TITLE_DOT_Y[1] - 5],
+                      fill=(*TITLE_DOT_DIM, 255))
     if 1 <= si <= 5:
-        d.text((W / 2, 125), f"ТИП {si} ИЗ 5", font=font(F_B, 38), fill=col, anchor="ms")
-    size = 112
-    while font(F_XB, size).getlength(sc["title"]) > 940:
+        d.text((W / 2, TITLE_COUNTER_Y), f"ТИП {si} ИЗ 5",
+               font=font(F_B, TITLE_FS_COUNTER), fill=col, anchor="ms")
+    size = TITLE_FS_TITLE
+    while font(F_XB, size).getlength(sc["title"]) > TITLE_MAXW:
         size -= 4
-    d.text((W / 2, 250), sc["title"], font=font(F_XB, size), fill=(255, 255, 255), anchor="ms")
-    d.text((W / 2, 312), sc["tag"], font=font(F_SB, 42), fill=(170, 178, 210), anchor="ms")
+    d.text((W / 2, TITLE_TITLE_Y), sc["title"],
+           font=font(F_XB, size), fill=(255, 255, 255), anchor="ms")
+    d.text((W / 2, TITLE_TAG_Y), sc["tag"],
+           font=font(F_SB, TITLE_FS_TAG), fill=TITLE_COLOR_TAG, anchor="ms")
     return L
 
 
 # ----------------------------------------------------------------- холст иллюстраций
-CW, CH, CY = 900, 740, 370
-ILL_POS = (90, 462)
-
 class Cv:
     def __init__(s):
         s.img = Image.new("RGBA", (CW * S, CH * S), (0, 0, 0, 0))
@@ -278,9 +333,6 @@ def glow(cv, c, r, col, k=1.0):
     for m, a in ((2.6, 0.10), (2.0, 0.16), (1.5, 0.26)):
         cv.circle(c, r * m, fill=(*col, int(255 * a * k)))
 
-DARK = (18, 24, 48)
-GRAY = (140, 148, 182)
-
 
 # ----------------------------------------------------------------- 0. интро
 _r0 = random.Random(7)
@@ -304,56 +356,123 @@ def ill_intro(cv, t, col):
 
 
 # ----------------------------------------------------------------- 1. MLP
-LAYERS, LX = [4, 5, 5, 3], [130, 343, 557, 770]
-_rm = random.Random(3)
-MW = {(l, i, j): _rm.uniform(0.35, 1) for l in range(3) for i in range(LAYERS[l]) for j in range(LAYERS[l + 1])}
+LAYERS_DEFAULT = [4, 5, 5, 3]
+_MLP_WEIGHTS = {}
 
-def ill_mlp(cv, t, col):
+def _mlp_weights(layers):
+    key = tuple(layers)
+    if key not in _MLP_WEIGHTS:
+        rm = random.Random(3)
+        _MLP_WEIGHTS[key] = {
+            (l, i, j): rm.uniform(0.35, 1)
+            for l in range(len(layers) - 1)
+            for i in range(layers[l]) for j in range(layers[l + 1])
+        }
+    return _MLP_WEIGHTS[key]
+
+def ill_mlp(cv, t, col, params=None):
+    params = params or {}
+    layers = list(params.get("layers", LAYERS_DEFAULT))
+    n_layers = len(layers)
+
+    if n_layers == 1:
+        LX = [450]
+    else:
+        LX = [130 + i * (770 - 130) / (n_layers - 1) for i in range(n_layers)]
+
+    max_n = max(layers)
+    step_y = min(105, 660 / max_n) if max_n else 105
+
+    MW = _mlp_weights(layers)
     f = (t % 3.0) * 1.4 - 0.4
-    pos = [[(LX[l], CY - 20 + (i - (n - 1) / 2) * 105) for i in range(n)] for l, n in enumerate(LAYERS)]
-    for l in range(3):
+
+    pos = [[(LX[l], CY - 20 + (i - (n - 1) / 2) * step_y) for i in range(n)]
+           for l, n in enumerate(layers)]
+
+    for l in range(n_layers - 1):
         bl = max(0, 1 - abs(f - (l + 0.5)) * 1.25)
         for i, a in enumerate(pos[l]):
             for j, b in enumerate(pos[l + 1]):
                 w = MW[(l, i, j)]
-                cv.line(a, b, (*col, min(255, int(34 + 30 * w + 195 * bl * w))), 1.6 + 3.2 * bl * w)
-    for l in range(4):
+                cv.line(a, b, (*col, min(255, int(34 + 30 * w + 195 * bl * w))),
+                        1.6 + 3.2 * bl * w)
+
+    for l in range(n_layers):
         b = max(0, 1 - abs(f - l) * 1.1)
         for (x, y) in pos[l]:
             if b > 0.05:
                 glow(cv, (x, y), 22, col, b)
-            cv.circle((x, y), 22, fill=(*mix(DARK, col, b), 255), outline=(*col, 210), w=3)
-    for x, s in ((130, "вход"), (450, "скрытые слои"), (770, "выход")):
-        cv.text((x, 660), s, (F_SB, 30), (*GRAY, 255))
+            cv.circle((x, y), 22, fill=(*mix(DARK, col, b), 255),
+                      outline=(*col, 210), w=3)
+
+    cv.text((LX[0], 660), "вход", (F_SB, 30), (*GRAY, 255))
+    if n_layers >= 3:
+        cv.text((LX[n_layers // 2], 660), "скрытые слои", (F_SB, 30), (*GRAY, 255))
+    cv.text((LX[-1], 660), "выход", (F_SB, 30), (*GRAY, 255))
 
 
 # ----------------------------------------------------------------- 2. CNN
-HOUSE = ["....#....", "...###...", "..#####..", ".#######.", "#########",
-         ".#.....#.", ".#.###.#.", ".#.###.#.", ".#######."]
-INP = np.array([[1.0 if ch == "#" else 0.0 for ch in row] for row in HOUSE])
-OUTV = np.zeros((7, 7))
-for _r in range(7):
-    for _c in range(7):
-        _w = INP[_r:_r + 3, _c:_c + 3]
-        OUTV[_r, _c] = _w.max() - _w.min()
+HOUSE_DEFAULT = [
+    "....#....",
+    "...###...",
+    "..#####..",
+    ".#######.",
+    "#########",
+    ".#.....#.",
+    ".#.###.#.",
+    ".#.###.#.",
+    ".#######.",
+]
+_CNN_CACHE = {}
 
-def ill_cnn(cv, t, col):
+def _cnn_precompute(rows):
+    key = tuple(rows)
+    if key in _CNN_CACHE:
+        return _CNN_CACHE[key]
+    n_r, n_c = len(rows), len(rows[0])
+    inp = np.array([[1.0 if ch == "#" else 0.0 for ch in row] for row in rows])
+    out = np.zeros((max(0, n_r - 2), max(0, n_c - 2)))
+    for r in range(out.shape[0]):
+        for c in range(out.shape[1]):
+            w = inp[r:r + 3, c:c + 3]
+            out[r, c] = w.max() - w.min()
+    _CNN_CACHE[key] = (inp, out)
+    return inp, out
+
+def ill_cnn(cv, t, col, params=None):
+    params = params or {}
+    rows = params.get("image", HOUSE_DEFAULT)
+    if len(rows) != 9 or any(len(r) != 9 for r in rows):
+        raise ValueError(
+            f"ill_cnn: image must be 9x9, got {len(rows)}x"
+            f"{len(rows[0]) if rows else 0}"
+        )
+    INP, OUTV = _cnn_precompute(rows)
+
     C, gx, gy, ox, oy = 44, 48, CY - 198, 548, CY - 154
     rate = 10
     cyc = 49 / rate + 1.4
     k = min(int((t % cyc) * rate), 49)
-    for r in range(9):
-        for c in range(9):
+
+    for r in range(INP.shape[0]):
+        for c in range(INP.shape[1]):
             fill = mix((24, 30, 58), (226, 236, 255), INP[r, c])
-            cv.rrect((gx + c * C + 2, gy + r * C + 2, gx + c * C + C - 2, gy + r * C + C - 2), 6, fill=(*fill, 255))
-    for r in range(7):
-        for c in range(7):
+            cv.rrect((gx + c * C + 2, gy + r * C + 2,
+                      gx + c * C + C - 2, gy + r * C + C - 2), 6, fill=(*fill, 255))
+
+    for r in range(OUTV.shape[0]):
+        for c in range(OUTV.shape[1]):
             fill = mix((24, 30, 58), col, 0.16 + 0.84 * OUTV[r, c]) if r * 7 + c < k else (20, 25, 48)
-            cv.rrect((ox + c * C + 2, oy + r * C + 2, ox + c * C + C - 2, oy + r * C + C - 2), 6, fill=(*fill, 255))
+            cv.rrect((ox + c * C + 2, oy + r * C + 2,
+                      ox + c * C + C - 2, oy + r * C + C - 2), 6, fill=(*fill, 255))
+
     if k < 49:
         r0, c0 = divmod(k, 7)
-        cv.rrect((gx + c0 * C, gy + r0 * C, gx + (c0 + 3) * C, gy + (r0 + 3) * C), 8, outline=(*col, 255), w=5)
-        cv.rrect((ox + c0 * C, oy + r0 * C, ox + (c0 + 1) * C, oy + (r0 + 1) * C), 6, outline=(255, 255, 255, 255), w=4)
+        cv.rrect((gx + c0 * C, gy + r0 * C, gx + (c0 + 3) * C, gy + (r0 + 3) * C),
+                 8, outline=(*col, 255), w=5)
+        cv.rrect((ox + c0 * C, oy + r0 * C, ox + (c0 + 1) * C, oy + (r0 + 1) * C),
+                 6, outline=(255, 255, 255, 255), w=4)
+
     arrow(cv, (462, CY), (534, CY), (*col, 230), 5, 16)
     cv.text((498, CY - 38), "фильтр", (F_SB, 26), (*GRAY, 255))
     cv.text((gx + 198, CY + 235), "изображение", (F_SB, 30), (*GRAY, 255))
@@ -362,67 +481,105 @@ def ill_cnn(cv, t, col):
 
 
 # ----------------------------------------------------------------- 3. RNN
-TOK = ["Я", "иду", "в", "кино", "!"]
+TOK_DEFAULT = ["Я", "иду", "в", "кино", "!"]
 
-def ill_rnn(cv, t, col):
-    f = ((t % 5.0) / 3.8) * 5.4 - 0.3
-    xs = [90 + i * 180 for i in range(5)]
+def ill_rnn(cv, t, col, params=None):
+    params = params or {}
+    tokens = list(params.get("tokens", TOK_DEFAULT))
+    n = len(tokens)
+    if n < 2:
+        raise ValueError("ill_rnn: нужно минимум 2 токена")
+
+    if n == 1:
+        xs = [450]
+    else:
+        xs = [90 + i * (810 - 90) / (n - 1) for i in range(n)]
+
+    step_s = 0.75
+    cyc = n * step_s + 1.4
+    f = ((t % cyc) / step_s) - 0.3
+
     cy = CY - 10
-    for i in range(4):
+    for i in range(n - 1):
         x0, x1 = xs[i] + 66, xs[i + 1] - 66
         arrow(cv, (x0, cy), (x1, cy), (*col, 110), 4, 14)
         p = (f - (i + 0.55)) / 0.9
         if 0 < p < 1:
             cv.circle((x0 + (x1 - x0) * p, cy), 11, fill=(*col, 255))
+
     for i, x in enumerate(xs):
         act = f - i
         flash = max(0.0, 1 - act * 0.9) if act >= 0 else 0.0
         level = (0.28 + 0.72 * flash) if act >= 0 else 0.0
         arrow(cv, (x, cy + 128), (x, cy + 70), (*GRAY, 170), 3, 11)
-        cv.text((x, cy + 160), TOK[i], (F_B, 44), (255, 255, 255, 255))
+        cv.text((x, cy + 160), tokens[i], (F_B, 44), (255, 255, 255, 255))
         arrow(cv, (x, cy - 64), (x, cy - 106), (*col, 120 + int(135 * flash)), 3, 11)
         if flash > 0.05:
             glow(cv, (x, cy - 128), 16, col, flash)
-        cv.circle((x, cy - 128), 16, fill=(*mix(DARK, col, flash), 255), outline=(*col, 200), w=3)
+        cv.circle((x, cy - 128), 16,
+                  fill=(*mix(DARK, col, flash), 255), outline=(*col, 200), w=3)
         if flash > 0.05:
             glow(cv, (x, cy), 50, col, flash * 0.8)
-        cv.rrect((x - 62, cy - 62, x + 62, cy + 62), 28, fill=(*mix(DARK, col, level), 255),
+        cv.rrect((x - 62, cy - 62, x + 62, cy + 62), 28,
+                 fill=(*mix(DARK, col, level), 255),
                  outline=(*col, 255 if act >= 0 else 90), w=4)
-        cv.text((x, cy), f"h{i + 1}", (F_B, 40), (255, 255, 255, 255) if act >= 0 else (*GRAY, 255))
+        cv.text((x, cy), f"h{i + 1}", (F_B, 40),
+                (255, 255, 255, 255) if act >= 0 else (*GRAY, 255))
     cv.text((450, CY + 275), "память о предыдущих шагах", (F_SB, 32), (*col, 255))
 
 
 # ----------------------------------------------------------------- 4. Transformer
-TT = ["Кот", "сел", "на", "мягкий", "диван"]
-_rt = random.Random(11)
-AW = []
-for _i in range(5):
-    row = [0.0 if _i == _j else _rt.uniform(0.15, 1.0) for _j in range(5)]
-    m = max(row)
-    AW.append([v / m for v in row])
-TPOS = [(450 + 270 * math.cos(math.radians(-90 + 72 * i)), CY - 15 + 255 * math.sin(math.radians(-90 + 72 * i)))
-        for i in range(5)]
+TT_DEFAULT = ["Кот", "сел", "на", "мягкий", "диван"]
+_TRF_CACHE = {}
 
-def ill_trf(cv, t, col):
-    k = int(t / 1.2) % 5
+def _trf_precompute(tokens):
+    key = tuple(tokens)
+    if key in _TRF_CACHE:
+        return _TRF_CACHE[key]
+    n = len(tokens)
+    rt = random.Random(11)
+    aw = []
+    for i in range(n):
+        row = [0.0 if i == j else rt.uniform(0.15, 1.0) for j in range(n)]
+        m = max(row) or 1.0
+        aw.append([v / m for v in row])
+    radius = 270 if n >= 4 else 240
+    tpos = [(450 + radius * math.cos(math.radians(-90 + 360 * i / n)),
+             CY - 15 + (radius * 0.945) * math.sin(math.radians(-90 + 360 * i / n)))
+            for i in range(n)]
+    _TRF_CACHE[key] = (aw, tpos)
+    return aw, tpos
+
+def ill_trf(cv, t, col, params=None):
+    params = params or {}
+    tokens = list(params.get("tokens", TT_DEFAULT))
+    n = len(tokens)
+    if n < 2:
+        raise ValueError("ill_trf: нужно минимум 2 токена")
+    AW, TPOS = _trf_precompute(tokens)
+
+    k = int(t / 1.2) % n
     blend = smooth(((t % 1.2) / 1.2) / 0.35)
-    for i in range(5):
-        for j in range(i + 1, 5):
+    for i in range(n):
+        for j in range(i + 1, n):
             cv.line(TPOS[i], TPOS[j], (*col, 28), 2)
-    for j in range(5):
+    for j in range(n):
         if j == k:
             continue
         w = AW[k][j] * blend
         cv.line(TPOS[k], TPOS[j], (*col, int(60 + 195 * w)), 3 + 11 * w)
     for i, (x, y) in enumerate(TPOS):
         w = 1.0 if i == k else AW[k][i] * blend
-        wd = max(150, font(F_B, 36).getlength(TT[i]) + 64)
+        wd = max(150, font(F_B, 36).getlength(tokens[i]) + 64)
         if w > 0.5:
-            cv.rrect((x - wd / 2 - 8, y - 43, x + wd / 2 + 8, y + 43), 30, fill=(*col, int(60 * w)))
-        cv.rrect((x - wd / 2, y - 35, x + wd / 2, y + 35), 26, fill=(*mix(DARK, col, 0.9 * w), 255),
+            cv.rrect((x - wd / 2 - 8, y - 43, x + wd / 2 + 8, y + 43), 30,
+                     fill=(*col, int(60 * w)))
+        cv.rrect((x - wd / 2, y - 35, x + wd / 2, y + 35), 26,
+                 fill=(*mix(DARK, col, 0.9 * w), 255),
                  outline=(*col, 230), w=3)
-        cv.text((x, y), TT[i], (F_B, 36), (255, 255, 255, 255))
-    cv.text((450, CY + 330), "каждое слово смотрит на все остальные", (F_SB, 30), (*GRAY, 255))
+        cv.text((x, y), tokens[i], (F_B, 36), (255, 255, 255, 255))
+    cv.text((450, CY + 330), "каждое слово смотрит на все остальные",
+            (F_SB, 30), (*GRAY, 255))
 
 
 # ----------------------------------------------------------------- 5. Генеративные (диффузия)
@@ -525,7 +682,6 @@ def make_music(total):
     roots  = [110.0, 87.31, 130.81, 98.0]
     seg = 6.0
 
-    # --- пад + бас ---
     for k in range(int(total / seg) + 2):
         s0, dur = k * seg - 0.8, 7.6
         a, b = max(0, int(s0 * SR)), min(n, int((s0 + dur) * SR))
@@ -538,7 +694,6 @@ def make_music(total):
             sig[a:b] += env * 0.5 * (np.sin(2 * np.pi * f * tt) + 0.5 * np.sin(2 * np.pi * f * 1.003 * tt))
         sig[a:b] += env * 0.8 * np.sin(2 * np.pi * roots[k % 4] * tt)
 
-    # --- арпеджио-«капли» ---
     step = 0.5
     for i in range(int(total / step)):
         ts = i * step
@@ -547,7 +702,6 @@ def make_music(total):
         tt = np.arange(a, b) / SR - ts
         sig[a:b] += 0.22 * np.exp(-tt * 7) * (np.sin(2 * np.pi * f * tt) + 0.3 * np.sin(4 * np.pi * f * tt))
 
-    # --- переход между сценами: 'колокольчик' ---
     for sc in SCENES[1:]:
         sig = _add_bell(sig, at=sc["start"] - 0.05, base_f=880.0, gain=0.55)
     return sig
@@ -562,7 +716,7 @@ def _add_bell(sig, at, base_f=880.0, gain=0.5, dur=0.9, sr=SR):
         return sig
     tt = np.arange(b - a) / sr
     env = np.exp(-tt * 4.5)
-    f_mod = base_f * 2.4                       # несущая-модулятор
+    f_mod = base_f * 2.4
     mod   = np.sin(2 * np.pi * f_mod * tt) * 2.2 * np.exp(-tt * 6)
     car   = np.sin(2 * np.pi * base_f * tt + mod)
     tone  = car + 0.35 * np.sin(2 * np.pi * base_f * 2.01 * tt) \
@@ -587,16 +741,13 @@ def mix_voice_and_music(total, music):
     m = np.zeros(n, dtype=np.float32)
     m[:min(n, len(music))] = music[:min(n, len(music))]
 
-    # Музыка — ровный тихий фон. FLOOR_DB задаёт уровень относительно микса.
-    MUSIC_GAIN = 0.20          # 70% от текущего уровня (−30%)
-    FLOOR_DB   = -16.0
     m *= 10 ** (FLOOR_DB / 20.0) * MUSIC_GAIN
 
     mix = m + voice
     peak = np.abs(mix).max()
     if peak > 1.0:
         mix *= 0.99 / peak
-    mix *= 0.85  # запас по True Peak под −14 LUFS / −1.4 dBTP
+    mix *= 0.85
     return mix
 
 
@@ -652,7 +803,6 @@ def main():
     total = build_timeline()
     print(f"Длительность: {total:.1f} сек, слов: {sum(len(s['words']) for s in SCENES)}")
 
-    # --- версионирование по timestamp ---------------------------------------
     from datetime import datetime
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if stills:
@@ -661,7 +811,6 @@ def main():
         OUT_DIR = os.path.join(OUT_DIR, ts)
     os.makedirs(OUT_DIR, exist_ok=True)
     print(f"Папка вывода: {OUT_DIR}")
-    # ------------------------------------------------------------------------
 
     for sc in SCENES:
         layout_caption(sc)
@@ -686,7 +835,6 @@ def main():
         print("Кадры сохранены в:", STILLS)
         return
 
-    # --- аудио: музыка + голос + нормализация ---
     music = make_music(total)
     mix   = mix_voice_and_music(total, music)
     raw   = os.path.join(OUT_DIR, "audio_raw.wav")
