@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Динамический движок роликов. Рендерит по content/scenes.json,
 переиспользуя движок shorts_creator.py (иллюстрации, звук, ffmpeg).
-Стиль (размеры шрифтов, цвета, громкость, паузы) — из content/presets/*.json."""
+Стиль (размеры шрифтов, цвета, громкость, паузы) — из content/presets/*.json.
+Дополнительные иллюстрации (graph/flow/timeline/tree/compare и улучшенные
+mlp/rnn/trf) подключаются из ills_extra.py."""
 import sys, os, subprocess
 from datetime import datetime
 from pathlib import Path
 
 import shorts_creator as sc
 from scenes_loader import load_scenes, load_preset, clone
+from ills_extra import ILL_EXTRA, ILL_ALIASES
 
 PROJECT = Path(r"D:\Projects\video-generator-01")
 SCENES_JSON = PROJECT / "content" / "scenes.json"
@@ -22,6 +25,15 @@ def build_registry(data):
     assert len(_ILL_ORDER) == len(sc.ILL), "shorts_creator.ILL порядок изменился"
     base = dict(zip(_ILL_ORDER, sc.ILL))
 
+    # переопределяем mlp/rnn/trf/outro на улучшенные версии из ills_extra
+    for k in ("mlp", "rnn", "trf", "outro"):
+        if k in ILL_EXTRA:
+            base[k] = ILL_EXTRA[k]
+
+    # добавляем новые типы (graph/flow/timeline/tree/compare)
+    for k, fn in ILL_EXTRA.items():
+        base[k] = fn
+
     def wrap(fn):
         if fn in (sc.ill_intro, sc.ill_gen, sc.ill_outro):
             return lambda cv, t, col, params=None: fn(cv, t, col)
@@ -30,11 +42,15 @@ def build_registry(data):
     reg = {k: wrap(v) for k, v in base.items()}
     reg["transformer"] = reg["trf"]
     reg["generative"]  = reg["gen"]
+    # алиасы
+    for alias, target in ILL_ALIASES.items():
+        if target in reg:
+            reg[alias] = reg[target]
     return reg
 
 # ---------------------------------------------------------------------------
 # Применение пресета: переопределяем глобалы shorts_creator через setattr.
-# Отсутствующие ключи — не трогаем (работают дефолты).
+# Отсутствующие ключи не трогаем (работают дефолты).
 # ---------------------------------------------------------------------------
 def apply_style(preset):
     if not preset:
@@ -115,9 +131,7 @@ def build_timeline_scoped(scenes, speech_rate=1.0):
         sc.SPEECH_RATE = saved_rate
 
 # ---------------------------------------------------------------------------
-# build_title_dyn: без индексов; счётчик из meta.types_count и scene.type_index.
-# Использует те же TITLE_* глобалы, что и build_title в shorts_creator,
-# поэтому пресет влияет и здесь.
+# build_title_dyn
 # ---------------------------------------------------------------------------
 def build_title_dyn(scene, meta):
     W = sc.W
@@ -242,9 +256,8 @@ def main():
     scenes = data["scenes"]
 
     preset = load_preset(data["style_path"])
-    apply_style(preset)                                 # ★ до build_timeline
+    apply_style(preset)
 
-    # приоритет: presets.timing.speech_rate → meta.speech_rate → 1.0
     sr = preset.get("timing", {}).get("speech_rate", meta["speech_rate"])
 
     registry = build_registry(data)
@@ -256,6 +269,7 @@ def main():
     total, scenes = build_timeline_scoped(scenes, sr)
     print(f"Длительность: {total:.1f} сек, слов: {sum(len(s['words']) for s in scenes)}")
     print(f"Пресет: {data['style_path']} ({'загружен' if preset else 'не найден, дефолты'})")
+    print(f"Типов ill в реестре: {len(registry)}")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = "_stills" if stills else ""
