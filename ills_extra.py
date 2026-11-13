@@ -30,6 +30,19 @@ DIRECTIONS   = ("forward", "backward", "bidirectional")
 TRF_MODES    = ("graph", "heatmap")
 ICONS        = ("in", "proc", "out", "none")
 
+PULSE_STEP = 1.3
+
+def _pulse_idx(t, seq):
+    if not seq:
+        return None
+    return seq[int(t / PULSE_STEP) % len(seq)]
+
+def _check_pulse(name, seq, lo, hi):
+    if not isinstance(seq, list) or not seq:
+        raise ValueError(f"{name}: должен быть непустой список")
+    for v in seq:
+        if not isinstance(v, int) or not (lo <= v <= hi):
+            raise ValueError(f"{name}: элемент {v} вне диапазона {lo}..{hi}")
 
 # ===========================================================================
 # 1. GRAPH — график (bar / line / area / donut)
@@ -56,33 +69,32 @@ def ill_graph(cv, t, col, params=None):
     if labels and len(labels) != n:
         raise ValueError(f"ill_graph: len(labels)={len(labels)} != len(values)={n}")
 
-    # анимация появления
+    pulse = p.get("pulse_bars")
+    if pulse is not None:
+        _check_pulse("ill_graph.pulse_bars", pulse, 0, n - 1)
+    hl_idx = _pulse_idx(t, pulse) if pulse is not None else (hl or {}).get("index")
+
     prog = smooth(t / 0.8)
 
     if kind == "donut":
         _graph_donut(cv, col, series[0], prog)
         return
 
-    # сетка
     pad_l, pad_r, pad_t, pad_b = 90, 60, 70, 110
     gx0, gx1 = pad_l, CW - pad_r
     gy0, gy1 = pad_t, CH - pad_b
     gw, gh = gx1 - gx0, gy1 - gy0
 
-    # общий максимум по всем series
     vmax = max(max(s["values"]) for s in series) or 1
     vmin = 0
 
-    # гориз. линии сетки (5 шт)
     for i in range(5):
         y = gy0 + gh * i / 4
         cv.line((gx0, y), (gx1, y), (*GRAY, 70), 1)
 
-    # подпись оси Y
     if axis_y:
         cv.text((pad_l - 18, gy0 - 30), axis_y, (F_SB, 24), (*GRAY, 255), anchor="rm")
 
-    # столбцы / линии
     step = gw / n
     x_centers = [gx0 + step * (i + 0.5) for i in range(n)]
     for si, s in enumerate(series):
@@ -110,26 +122,23 @@ def ill_graph(cv, t, col, params=None):
             for (x, y) in pts:
                 cv.circle((x, y), 8, fill=(*scol, 255))
 
-    # подписи X
     for i, lbl in enumerate(labels):
         cv.text((x_centers[i], gy1 + 30), str(lbl), (F_SB, 24), (*GRAY, 255))
 
-    # подпись оси X
     if axis_x:
         cv.text(((gx0 + gx1) / 2, gy1 + 70), axis_x, (F_SB, 24), (*GRAY, 255))
 
-    # подсветка точки
-    if hl and isinstance(hl.get("index"), int) and 0 <= hl["index"] < n:
-        i = hl["index"]
+    if hl_idx is not None and isinstance(hl_idx, int) and 0 <= hl_idx < n:
+        i = hl_idx
         x = x_centers[i]
         s0 = series[0]
         y = gy1 - (s0["values"][i] - vmin) / (vmax - vmin) * gh
         cv.circle((x, y), 18, fill=(*WHITE, 60))
         cv.circle((x, y), 11, fill=(*WHITE, 255))
-        if hl.get("label"):
-            cv.text((x, y - 40), str(hl["label"]), (F_B, 30), (*WHITE, 255))
+        hl_label = (hl or {}).get("label") if pulse is None else None
+        if hl_label:
+            cv.text((x, y - 40), str(hl_label), (F_B, 30), (*WHITE, 255))
 
-    # легенда (если series > 1)
     if len(series) > 1:
         lx = gx0
         ly = pad_t - 34
@@ -138,7 +147,6 @@ def ill_graph(cv, t, col, params=None):
             cv.circle((lx, ly), 9, fill=(*scol, 255))
             cv.text((lx + 20, ly), s.get("name", ""), (F_SB, 24), (*GRAY, 255), anchor="lm")
             lx += 30 + int(font(F_SB, 24).getlength(s.get("name", ""))) + 30
-
 
 def _graph_donut(cv, col, series, prog):
     vals = series.get("values", [])
@@ -198,6 +206,11 @@ def ill_flow(cv, t, col, params=None):
             if ic not in ICONS:
                 raise ValueError(f"ill_flow: icon='{ic}' не из {ICONS}")
 
+    pulse = p.get("pulse_steps")
+    if pulse is not None:
+        _check_pulse("ill_flow.pulse_steps", pulse, 0, len(steps) - 1)
+    hl_now = _pulse_idx(t, pulse) if pulse is not None else hl
+
     n = len(steps)
     prog = smooth(t / 0.7)
 
@@ -215,7 +228,6 @@ def ill_flow(cv, t, col, params=None):
         y_start = (CH - total_h) / 2
         centers = [(CW / 2, y_start + i * (block_h + 30) + block_h / 2) for i in range(n)]
 
-    # стрелки между блоками
     for i in range(n - 1):
         ax, ay = centers[i]
         bx, by = centers[i + 1]
@@ -229,19 +241,17 @@ def ill_flow(cv, t, col, params=None):
         if arrows == "bidirectional":
             arrow(cv, b, a, (*GRAY, 200), 4, 14)
 
-    # блоки
     for i, (cx, cy) in enumerate(centers):
         appear = ease_out((t - i * 0.08) / 0.4)
         if appear <= 0:
             continue
         x0, y0 = cx - block_w / 2, cy - block_h / 2
         x1, y1 = cx + block_w / 2, cy + block_h / 2
-        is_hl = (hl == i)
+        is_hl = (hl_now == i)
         fill_col = (*mix(DARK, col, 0.85 if is_hl else 0.18), int(255 * appear))
         out_col  = (*col, int(255 * appear)) if is_hl else (*GRAY, int(255 * appear))
         cv.rrect((x0, y0, x1, y1), 20, fill=fill_col, outline=out_col, w=4 if is_hl else 2)
 
-        # иконка
         if icons and icons[i] != "none":
             ic_y = y0 + 30
             _draw_icon(cv, (cx, ic_y), icons[i], (*col, int(255 * appear)))
@@ -249,16 +259,14 @@ def ill_flow(cv, t, col, params=None):
         else:
             ty = cy
 
-        # текст — ужимаем, если длинно
         size = 28
         while font(F_B, size).getlength(steps[i]) > block_w - 20 and size > 14:
             size -= 2
         cv.text((cx, ty), steps[i], (F_B, size), (*WHITE, int(255 * appear)))
 
-        # номер шага
         cv.circle((x0 + 22, y0 + 22), 16, fill=(*col, int(220 * appear)))
         cv.text((x0 + 22, y0 + 22), str(i + 1), (F_XB, 20), (*DARK, int(255 * appear)))
-
+        
 
 def _draw_icon(cv, c, kind, col):
     x, y = c
@@ -448,6 +456,15 @@ def ill_compare(cv, t, col, params=None):
         if not (1 <= len(items) <= 4):
             raise ValueError(f"ill_compare: {name}.items должно быть 1–4, получено {len(items)}")
 
+    pulse = p.get("pulse_sides")
+    if pulse is not None:
+        if not isinstance(pulse, list) or not pulse:
+            raise ValueError("ill_compare.pulse_sides: должен быть непустой список")
+        for v in pulse:
+            if v not in ("left", "right"):
+                raise ValueError(f"ill_compare.pulse_sides: '{v}' не из left/right")
+    hl_now = pulse[int(t / PULSE_STEP) % len(pulse)] if pulse is not None else hl_side
+
     prog = smooth(t / 0.6)
 
     col_l = tuple(left.get("color", col))
@@ -458,15 +475,11 @@ def ill_compare(cv, t, col, params=None):
     col_w = (CW - 2 * pad - gap) / 2
     y0, y1 = 100, CH - 100
 
-    # левая колонка
-    _compare_col(cv, (pad, y0, pad + col_w, y1), col_l, left, prog, hl_side == "left")
-    # правая
-    _compare_col(cv, (pad + col_w + gap, y0, pad + 2 * col_w + gap, y1), col_r, right, prog, hl_side == "right")
+    _compare_col(cv, (pad, y0, pad + col_w, y1), col_l, left, prog, hl_now == "left")
+    _compare_col(cv, (pad + col_w + gap, y0, pad + 2 * col_w + gap, y1), col_r, right, prog, hl_now == "right")
 
-    # "vs" в центре
     cv.circle((CW / 2, CY), 46, fill=(*DARK, 255), outline=(*GRAY, 255), w=3)
     cv.text((CW / 2, CY), "vs", (F_XB, 36), (*GRAY, 255))
-
 
 def _compare_col(cv, box, col, data, prog, hl):
     x0, y0, x1, y1 = box
@@ -523,9 +536,14 @@ def ill_mlp(cv, t, col, params=None):
     if not (3 <= len(layers) <= 5):
         raise ValueError(f"ill_mlp: layers должно быть 3–5, получено {len(layers)}")
     for i, n in enumerate(layers):
-        lo = 1 if i == len(layers) - 1 else 2   # последний слой может быть 1
+        lo = 1 if i == len(layers) - 1 else 2
         if not (lo <= n <= 8):
             raise ValueError(f"ill_mlp: слой {i} должен быть {lo}–8, получено {n}")
+
+    pulse = p.get("pulse_layers")
+    if pulse is not None:
+        _check_pulse("ill_mlp.pulse_layers", pulse, 0, len(layers) - 1)
+    hl_now = _pulse_idx(t, pulse) if pulse is not None else hl_layer
 
     n_layers = len(layers)
     if n_layers == 1:
@@ -552,7 +570,7 @@ def ill_mlp(cv, t, col, params=None):
 
     for l in range(n_layers):
         b = max(0, 1 - abs(f - l) * 1.1)
-        if hl_layer is not None and l == hl_layer:
+        if hl_now is not None and l == hl_now:
             b = max(b, 0.8)
         for (x, y) in pos[l]:
             if b > 0.05:
@@ -564,7 +582,7 @@ def ill_mlp(cv, t, col, params=None):
     if n_layers >= 3:
         cv.text((LX[n_layers // 2], 660), "скрытые слои", (F_SB, 30), (*GRAY, 255))
     cv.text((LX[-1], 660), "выход", (F_SB, 30), (*GRAY, 255))
-
+    
 
 # ===========================================================================
 # 7. RNN+ — обновлённый ill_rnn (params: tokens, direction, memory_steps, highlight_step)
@@ -758,12 +776,8 @@ def _trf_heatmap(cv, t, col, tokens, AW, hl_tok):
 # 9. OUTRO+ — финальная сцена: список типов из текущего ролика
 # ===========================================================================
 def ill_outro(cv, t, col, params=None):
-    """Список сцен 1..N с их title и ill-ключом (вместо SHORT из shorts_creator).
-    Берёт сцены из sc.SCENES (уже подменён в video_generator.install_scenes).
-    Ожидает, что в SCENES есть хотя бы intro + N основных + outro."""
     scenes = sc.SCENES
-    # сколько показывать: все сцены с type_index != null, максимум 6
-    items = [s for s in scenes if s.get("type_index") is not None][:6]
+    items = [s for s in scenes if s.get("ill") not in ("intro", "outro")][:6]
     n = len(items)
     if n == 0:
         return
@@ -774,7 +788,6 @@ def ill_outro(cv, t, col, params=None):
             continue
         a = int(255 * e)
         c = s.get("color", col)
-        # подгоняем высоту строки под количество
         row_h = 100 if n <= 5 else 84
         gap = 32 if n <= 5 else 20
         y0 = 60 + i * (row_h + gap)
@@ -783,10 +796,7 @@ def ill_outro(cv, t, col, params=None):
                  fill=(22, 27, 54, a), outline=(*c, a), w=3)
         cv.circle((x0 + 50, y0 + row_h / 2), 30, fill=(*c, a))
         cv.text((x0 + 50, y0 + row_h / 2), str(i + 1), (F_XB, 34), (10, 12, 26, a))
-        # заголовок сцены
-        # заголовок сцены — фиксированный шрифт, обрезка по ширине
         title = s.get("title", "").capitalize()
-        # 720 — ширина плашки, 100 — отступ слева (под номер), 20 — отступ справа        
         max_w = 720 - 100 - 20
         size_t = 44 if n <= 5 else 36
         if font(F_XB, size_t).getlength(title) > max_w:
@@ -796,11 +806,7 @@ def ill_outro(cv, t, col, params=None):
             title = title.rstrip() + "..."
         cv.text((x0 + 100, y0 + row_h / 2), title, (F_XB, size_t),
                 (255, 255, 255, a), anchor="lm")
-        # # ключ ill справа
-        # ill_name = s.get("ill", "").upper()
-        # size_i = 28 if n <= 5 else 22
-        # cv.text((x0 + 700, y0 + row_h / 2), ill_name, (F_SB, size_i),
-        #         (*GRAY, a), anchor="rm")
+
 
 # ===========================================================================
 # Реестр для video_generator.build_registry
