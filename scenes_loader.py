@@ -6,7 +6,7 @@ from pathlib import Path
 from copy import deepcopy
 
 REQUIRED = ("key", "ill", "title", "tag", "text")
-OPTIONAL = ("type_index", "color", "voice", "ill_params")
+# OPTIONAL = ("type_index", "color", "voice", "ill_params")
 
 PRESET_SECTIONS = ("caption", "title", "illustration", "audio", "timing", "colors")
 
@@ -32,7 +32,6 @@ def load_scenes(path):
             raise ValueError(f"duplicate scene key: {s['key']}")
         seen.add(s["key"])
 
-        s.setdefault("type_index", None)
         s.setdefault("color", [124, 92, 255])
         s.setdefault("voice", s["key"])
         s.setdefault("ill_params", {})
@@ -40,9 +39,6 @@ def load_scenes(path):
         if not isinstance(s["color"], (list, tuple)) or len(s["color"]) != 3:
             raise ValueError(f"scene '{s['key']}': color must be [r,g,b]")
         s["color"] = tuple(int(c) for c in s["color"])
-
-    if "types_count" not in meta:
-        meta["types_count"] = sum(1 for s in scenes if s.get("type_index") is not None)
 
     meta.setdefault("output_name", "short.mp4")
     meta.setdefault("speech_rate", 1.0)
@@ -56,7 +52,6 @@ def load_scenes(path):
         "style_path": style_path,
         "scenes": scenes,
     }
-
 
 def load_preset(path):
     """Читает presets/*.json. Если файла нет — пустой пресет (все дефолты).

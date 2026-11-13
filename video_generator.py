@@ -133,34 +133,24 @@ def build_timeline_scoped(scenes, speech_rate=1.0):
 # ---------------------------------------------------------------------------
 # build_title_dyn
 # ---------------------------------------------------------------------------
-def build_title_dyn(scene, meta):
+def build_title_dyn(scene, idx, total):
     W = sc.W
     col = scene["color"]
     L = sc.Image.new("RGBA", (W, sc.TITLE_H), (0, 0, 0, 0))
     d = sc.ImageDraw.Draw(L)
 
-    n = meta["types_count"]
-    cur = scene.get("type_index")
-    if cur is None:
-        cur = 0 if scene["ill"] == "intro" else n + 1
-
-    if n > 0:
-        x0 = W / 2 - (n - 1) * sc.TITLE_DOT_STEP / 2
-        for i in range(n):
+    if total > 0:
+        x0 = W / 2 - (total - 1) * sc.TITLE_DOT_STEP / 2
+        for i in range(total):
             x = x0 + i * sc.TITLE_DOT_STEP
-            idx = i + 1
-            if idx == cur:
+            if i == idx:
                 d.ellipse([x - 15, sc.TITLE_DOT_Y[0], x + 15, sc.TITLE_DOT_Y[1]], fill=col)
-            elif idx < cur:
+            elif i < idx:
                 d.ellipse([x - 10, sc.TITLE_DOT_Y[0] + 5, x + 10, sc.TITLE_DOT_Y[1] - 5],
                           fill=(*col, 130))
             else:
                 d.ellipse([x - 10, sc.TITLE_DOT_Y[0] + 5, x + 10, sc.TITLE_DOT_Y[1] - 5],
                           fill=(*sc.TITLE_DOT_DIM, 255))
-
-    if cur is not None and 1 <= cur <= n:
-        d.text((W / 2, sc.TITLE_COUNTER_Y), f"ТИП {cur} ИЗ {n}",
-               font=sc.font(sc.F_B, sc.TITLE_FS_COUNTER), fill=col, anchor="ms")
 
     size = sc.TITLE_FS_TITLE
     while sc.font(sc.F_XB, size).getlength(scene["title"]) > sc.TITLE_MAXW:
@@ -171,15 +161,16 @@ def build_title_dyn(scene, meta):
            font=sc.font(sc.F_SB, sc.TITLE_FS_TAG), fill=sc.TITLE_COLOR_TAG, anchor="ms")
     return L
 
+
 # ---------------------------------------------------------------------------
 # Рендер кадров
 # ---------------------------------------------------------------------------
-def render(scenes, meta, registry, total, out_dir):
+def render(scenes, registry):
     BG, TITLE = [], []
-    for scene in scenes:
+    for i, scene in enumerate(scenes):
         sc.layout_caption(scene)
         BG.append(sc.make_bg(scene["color"]))
-        TITLE.append(build_title_dyn(scene, meta))
+        TITLE.append(build_title_dyn(scene, i, len(scenes)))
 
     def scene_at(t):
         for i, s in enumerate(scenes):
@@ -213,6 +204,7 @@ def render(scenes, meta, registry, total, out_dir):
         return fr
 
     return make_frame
+
 
 # ---------------------------------------------------------------------------
 # Аудио и ffmpeg
@@ -302,7 +294,7 @@ def main():
     sc.OUT_DIR = str(out_dir)
     install_scenes(scenes)
 
-    make_frame = render(scenes, meta, registry, total, out_dir)
+    make_frame = render(scenes, registry)
 
     if stills:
         STILLS = out_dir / "stills"
