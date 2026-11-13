@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Обрезка тишины в начале/конце mp3-озвучки.
 
-Читает SCENES (импортом из video_creator) и обрабатывает
-assets/voice/<key>.mp3 → assets/voice_trimmed/<key>.wav
+Сканирует assets/voice/*.mp3, обрезает тишину, кладёт в
+assets/voice_trimmed/<то_же_имя>.wav. Префиксы (например,
+shorts_history_nn_intro) сохраняются как есть.
 """
 import os, subprocess, sys
 import numpy as np
 import wave
-from shorts_creator import SCENES 
 
-IN_DIR   = r"D:\Projects\video-generator-01\assets\voice"
+IN_DIR    = r"D:\Projects\video-generator-01\assets\voice"
 OUT_DIR   = r"D:\Projects\video-generator-01\assets\voice_trimmed"
 VOICE_EXT = ".mp3"
 SR        = 44100
@@ -26,7 +26,6 @@ def decode_mp3(path, sr=SR):
 
 
 def find_bounds(x, thr=THRESHOLD):
-    """Возвращает (start_sample, end_sample) по громкости."""
     mask = np.abs(x) > thr
     if not mask.any():
         return 0, len(x)
@@ -45,26 +44,34 @@ def write_wav(path, x, sr=SR):
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
+    if not os.path.isdir(IN_DIR):
+        print(f"ОШИБКА: папка не найдена: {IN_DIR}")
+        sys.exit(1)
+
+    # все mp3 из папки, сортировка для читаемого вывода
+    files = sorted(f for f in os.listdir(IN_DIR) if f.lower().endswith(VOICE_EXT))
+    if not files:
+        print(f"Нет mp3-файлов в {IN_DIR}")
+        return
+
     pad = int(PAD_MS * SR / 1000)
     report = []
-    for sc in SCENES:
-        key = sc["key"]
-        src = os.path.join(IN_DIR, key + VOICE_EXT)
-        if not os.path.exists(src):
-            print(f"[skip] {key}: нет файла {src}")
-            continue
+    for fname in files:
+        src = os.path.join(IN_DIR, fname)
+        name = os.path.splitext(fname)[0]           # например, shorts_history_nn_intro
         x = decode_mp3(src)
         a, b = find_bounds(x)
         a = max(0, a - pad)
         b = min(len(x), b + pad)
         trimmed = x[a:b]
-        dst = os.path.join(OUT_DIR, key + ".wav")
+        dst = os.path.join(OUT_DIR, name + ".wav")
         write_wav(dst, trimmed)
         cut_head = a / SR
         cut_tail = (len(x) - b) / SR
-        report.append((key, len(x) / SR, cut_head, cut_tail, len(trimmed) / SR))
-        print(f"{key:8s} было {len(x)/SR:6.2f} c  →  стало {len(trimmed)/SR:6.2f} c  "
+        report.append((name, len(x) / SR, cut_head, cut_tail, len(trimmed) / SR))
+        print(f"{name:35s} было {len(x)/SR:6.2f} c  →  стало {len(trimmed)/SR:6.2f} c  "
               f"(срезано: {cut_head:.2f} c / {cut_tail:.2f} c)")
+
     print(f"\nГотово: {len(report)} файлов в {OUT_DIR}")
 
 

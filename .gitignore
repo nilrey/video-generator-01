@@ -15,7 +15,10 @@ stills/
 reference/
 data/
 
-# Временные файлы
+# файлы
+*.mp4
+*.mp3
+*.wav
 *.tmp
 *.log
 

@@ -47,6 +47,7 @@ TITLE_DOT_DIM    = (58, 64, 100)
 # audio
 VOICE_DIR   = r"D:\Projects\video-generator-01\assets\voice_trimmed"
 VOICE_EXT   = ".wav"
+VIDEO_ID  = "" 
 SR          = 44100
 TARGET_LUFS = -14.0
 TARGET_TP   = -1.4
@@ -169,7 +170,8 @@ def decode_audio(path, sr=SR):
     return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
 def voice_path(key):
-    return os.path.join(VOICE_DIR, key + VOICE_EXT)
+    prefix = f"{VIDEO_ID}_" if VIDEO_ID else ""
+    return os.path.join(VOICE_DIR, prefix + key + VOICE_EXT)
 
 # ----------------------------------------------------------------- субтитры
 def layout_caption(sc):

@@ -249,11 +249,15 @@ def encode_video(make_frame, audio_path, total, out_path):
 
 # ---------------------------------------------------------------------------
 def main():
+    import time
+    t_start = time.time()
     stills = "--stills" in sys.argv
 
     data   = load_scenes(SCENES_JSON)
     meta   = data["meta"]
     scenes = data["scenes"]
+    out_name = meta["output_name"]
+    video_id = os.path.splitext(out_name)[0]
 
     preset = load_preset(data["style_path"])
     apply_style(preset)
@@ -266,10 +270,28 @@ def main():
             raise KeyError(f"scene '{s['key']}': ill='{s['ill']}' не найден. "
                            f"Доступно: {sorted(set(registry))}")
 
+    # префикс озвучки = output_name без расширения
+    sc.VIDEO_ID = video_id
+
+    # валидация: все mp3 для сцен существуют (кроме --stills)
+    if not stills:
+        missing = []
+        for s in scenes:
+            vp = sc.voice_path(s["key"])
+            if not os.path.exists(vp):
+                missing.append(f"{s['key']} -> {vp}")
+        if missing:
+            print("ОШИБКА: не найдены файлы озвучки для сцен:")
+            for m in missing:
+                print("  " + m)
+            print(f"Сгенерируй mp3 с префиксом '{video_id}_' в {sc.VOICE_DIR}")
+            sys.exit(1)
+
     total, scenes = build_timeline_scoped(scenes, sr)
     print(f"Длительность: {total:.1f} сек, слов: {sum(len(s['words']) for s in scenes)}")
     print(f"Пресет: {data['style_path']} ({'загружен' if preset else 'не найден, дефолты'})")
     print(f"Типов ill в реестре: {len(registry)}")
+    print(f"VIDEO_ID: {video_id}")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = "_stills" if stills else ""
@@ -300,12 +322,16 @@ def main():
         return
 
     audio = render_audio(scenes, total, out_dir)
-    out_name = meta["output_name"]
     out_path = os.path.join(out_dir, out_name)
     encode_video(make_frame, audio, total, out_path)
 
     sc.write_texts(total)
     print("Готово:", out_path)
+
+    # метрики
+    elapsed = time.time() - t_start
+    print(f"Время ролика:    {total:5.1f} сек")
+    print(f"Время сборки:    {elapsed:5.1f} сек")
 
 if __name__ == "__main__":
     main()

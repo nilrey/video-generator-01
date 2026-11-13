@@ -522,9 +522,10 @@ def ill_mlp(cv, t, col, params=None):
 
     if not (3 <= len(layers) <= 5):
         raise ValueError(f"ill_mlp: layers должно быть 3–5, получено {len(layers)}")
-    for n in layers:
-        if not (2 <= n <= 8):
-            raise ValueError(f"ill_mlp: каждый слой 2–8 нейронов, получено {n}")
+    for i, n in enumerate(layers):
+        lo = 1 if i == len(layers) - 1 else 2   # последний слой может быть 1
+        if not (lo <= n <= 8):
+            raise ValueError(f"ill_mlp: слой {i} должен быть {lo}–8, получено {n}")
 
     n_layers = len(layers)
     if n_layers == 1:
@@ -783,15 +784,23 @@ def ill_outro(cv, t, col, params=None):
         cv.circle((x0 + 50, y0 + row_h / 2), 30, fill=(*c, a))
         cv.text((x0 + 50, y0 + row_h / 2), str(i + 1), (F_XB, 34), (10, 12, 26, a))
         # заголовок сцены
+        # заголовок сцены — фиксированный шрифт, обрезка по ширине
         title = s.get("title", "").capitalize()
+        # 720 — ширина плашки, 100 — отступ слева (под номер), 20 — отступ справа        
+        max_w = 720 - 100 - 20
         size_t = 44 if n <= 5 else 36
+        if font(F_XB, size_t).getlength(title) > max_w:
+            while (font(F_XB, size_t).getlength(title + "...") > max_w
+                   and len(title) > 4):
+                title = title[:-1]
+            title = title.rstrip() + "..."
         cv.text((x0 + 100, y0 + row_h / 2), title, (F_XB, size_t),
                 (255, 255, 255, a), anchor="lm")
-        # ключ ill справа
-        ill_name = s.get("ill", "").upper()
-        size_i = 28 if n <= 5 else 22
-        cv.text((x0 + 700, y0 + row_h / 2), ill_name, (F_SB, size_i),
-                (*GRAY, a), anchor="rm")
+        # # ключ ill справа
+        # ill_name = s.get("ill", "").upper()
+        # size_i = 28 if n <= 5 else 22
+        # cv.text((x0 + 700, y0 + row_h / 2), ill_name, (F_SB, size_i),
+        #         (*GRAY, a), anchor="rm")
 
 # ===========================================================================
 # Реестр для video_generator.build_registry
